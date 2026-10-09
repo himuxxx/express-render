@@ -6,7 +6,6 @@ export default async function handler(req, res) {
 
   const { username, password, combos } = req.body;
 
-  // Batch check (optional)
   if (combos && Array.isArray(combos) && combos.length > 0) {
     const results = [];
     for (const combo of combos) {
@@ -21,7 +20,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ results });
   }
 
-  // Single check
   if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
 
   const result = await checkExpressVPN(username, password);
